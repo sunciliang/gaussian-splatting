@@ -10,6 +10,8 @@
 #
 
 import os
+
+import numpy as np
 import torch
 from random import randint
 from utils.loss_utils import l1_loss, ssim
@@ -22,6 +24,9 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from mymodules import kerner
+import imageio
+to8b = lambda x:(255 * np.clip(x, 0 , 1)).astype(np.uint8)
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -75,7 +80,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+        idx = randint(0, len(viewpoint_stack)-1)
+        viewpoint_cam = viewpoint_stack.pop(idx)
+        # viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
         # Render
         if (iteration - 1) == debug_from:
@@ -93,6 +100,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss.backward()
 
         iter_end.record()
+
+        #___________________save img____________
+        if iteration % 2000 == 0:
+            with torch.no_grad():
+                if not os.path.exists(os.path.join(dataset.model_path,r'img/')):
+                    os.makedirs(os.path.join(dataset.model_path,r'img/'))
+                image_save = image.permute(1,2,0)
+                rgb8 = to8b(image_save.cpu().numpy())
+                filname = os.path.join(dataset.model_path,r'img/',f'{iteration}.png')
+                imageio.imwrite(filname,rgb8)
+
+
 
         with torch.no_grad():
             # Progress bar
