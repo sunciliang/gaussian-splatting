@@ -24,7 +24,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
-from mymodules import kerner
+from mymodules.kerner import *
 import imageio
 to8b = lambda x:(255 * np.clip(x, 0 , 1)).astype(np.uint8)
 try:
@@ -39,6 +39,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+    # ------------init deblurnet--------------------
+    deblurnet = debulrnet(num_img=len(scene.getTrainCameras().copy())).cuda()
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -88,10 +90,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
+        #________________PE___________________
+        idx = torch.tensor(idx, dtype=torch.int, device="cuda")
+        r_new, s_new = deblurnet(viewpoint_cam,gaussians,idx.reshape(-1))
+        # gaussians._rotation = gaussians._rotation * r_new
+        # gaussians._scaling = gaussians._scaling * s_new
+
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        # render_pkg_back = render(viewpoint_cam, gaussians, pipe, bg)
+        image, viewspace_point_tensor, visibility_filter, radii,depth = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"],render_pkg["depth"]
+        # 
+
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -110,6 +121,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 rgb8 = to8b(image_save.cpu().numpy())
                 filname = os.path.join(dataset.model_path,r'img/',f'{iteration}.png')
                 imageio.imwrite(filname,rgb8)
+
 
 
 

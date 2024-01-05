@@ -99,6 +99,10 @@ class GaussianModel:
     @property
     def get_rotation(self):
         return self.rotation_activation(self._rotation)
+
+    @get_rotation.setter
+    def get_rotation(self,value):
+        self._rotation = value
     
     @property
     def get_xyz(self):
