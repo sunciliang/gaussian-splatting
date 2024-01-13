@@ -8,6 +8,7 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
+import time
 
 import torch
 import torch.nn.functional as F

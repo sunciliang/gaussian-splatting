@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import os
+import glob
 import numpy as np
 
 class Embedder(nn.Module):
@@ -54,6 +56,15 @@ def get_embedder(multires, i=0, input_dim=3):
     embedder_obj = Embedder(**embed_kwargs)
     return embedder_obj, embedder_obj.out_dim
 
+def getlen(dataset):
+    image_extensions = ["*.jpg", "*.jpeg", "*.png", "*.gif", "*.bmp"]
+    pic = os.path.join(dataset.source_path, 'images')
+    files = []
+    for extension in image_extensions:
+        files.extend(glob.glob(os.path.join(pic, extension)))
+    image_count = len(files)
+    return image_count
+
 class View_Embedding(nn.Module):
     def __init__(self, num_embed, embed_dim):
         super(View_Embedding, self).__init__()
@@ -67,28 +78,43 @@ class View_Embedding(nn.Module):
 class debulrnet(nn.Module):
     def __init__(self,num_img):
         super().__init__()
-        self.view_embed_layer = View_Embedding(num_embed=num_img,embed_dim=64)
-        self.embed_fn, self.input_ch = get_embedder(10,0)
-        self.embeddirs_fn, self.input_ch_views = get_embedder(4,0)
-        self.mlp = nn.ModuleList(
-            [nn.Linear(self.input_ch+64+4+3,64)]+[nn.Linear(64,64)]+
-            [nn.Linear(64,7)]
+        self.view_embed_layer = View_Embedding(num_embed=num_img,embed_dim=16)
+        # self.embed_fn, self.input_ch = get_embedder(10,0)
+        # self.embeddirs_fn, self.input_ch_views = get_embedder(4,0)
+        self.mlp = nn.Sequential(
+            nn.Linear(3 + 4 + 3, 64),nn.ReLU(),nn.Linear(64,64),nn.ReLU(),
+            nn.Linear(64, 7), nn.ReLU()
         )
-    def forward(self,view,gauss,idx):
-        idx_embedded = self.view_embed_layer(idx)
-        xyz = gauss.get_xyz
-        idx_embedded = idx_embedded.expand(xyz.shape[0],64)
-        r = gauss.get_rotation
-        s = gauss.get_scaling
-        xyz_embed = self.embed_fn(xyz)
-        h = view_embed = torch.cat((xyz_embed,idx_embedded,r,s),dim=1)
-        for i, _ in enumerate(self.mlp):
-            h = self.mlp[i](h)
-            if i==2:
-                h = F.relu(h)+1
-            else:
-                h = F.relu(h)
-        new_r, new_s = torch.split(h,[4,3],dim=1)
-        return new_r, new_s
+        # self.mlp = nn.ModuleList(
+        #     [nn.Linear(3+4+3,64)]+[nn.Linear(64,64)]+
+        #     [nn.Linear(64,7)]
+        # )
+    def forward(self,xyz,r,s,idx, filter):
+        # rt = r.detach()
+        # st = s.detach()
+        # idx_embedded = self.view_embed_layer(idx)
+        # idx_embedded = idx_embedded.expand(xyz.shape[0],16)
+        # xyz_embed = self.embed_fn(xyz)
+        xyz_embed = xyz
+        h = view_embed = torch.cat((xyz_embed,r,s),dim=1)
+        # h = view_embed = torch.cat((xyz_embed,idx_embedded,r,s),dim=1)
+        # for i, _ in enumerate(self.mlp):
+        #     h = self.mlp[i](h)
+        #     if i==2:
+        #         h = nn.ReLU(h)
+        #     else:
+        #         h = nn.ReLU(h)
+        new = self.mlp(h)
+        new_r, new_s = torch.split(new,[4,3],dim=1)
+
+        # rr = torch.mul(r, new_r)
+        # rr = r * new_r
+        # ss = torch.mul(s, new_s)
+        # ss = s * new_s
+        # return ss, rr
+        return new_s, new_r
+
+    def get_mlp_parameters(self):
+        return list(self.view_embed_layer.parameters())+list(self.mlp.parameters())
 
 

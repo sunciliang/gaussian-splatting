@@ -8,6 +8,7 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
+import time
 
 import torch
 import math
@@ -15,7 +16,7 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, idx=-1, inference=False, filter=None, scaling_modifier = 1.0, override_color = None):
     """
     Render the scene. 
     
@@ -45,7 +46,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         sh_degree=pc.active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
-        # debug=pipe.debug
+        debug=pipe.debug
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -62,8 +63,22 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     if pipe.compute_cov3D_python:
         cov3D_precomp = pc.get_covariance(scaling_modifier)
     else:
-        scales = pc.get_scaling
-        rotations = pc.get_rotation
+        # scales = pc.get_scaling
+        # rotations = pc.get_rotation
+        scales = pc._scaling
+        rotations = pc._rotation
+    ###########################
+    xyz = pc.get_xyz
+    if inference:
+        scales_final, rotations_final = scales,rotations
+        # rotations_final = pc.rotation_activation(rotations_final)
+        # scales_final = pc.scaling_activation(scales_final)
+    else:
+        time.sleep(0.1)
+        scales_final, rotations_final = pc._blurkerner(xyz, rotations, scales, idx, filter)
+
+    rotations_final = pc.rotation_activation(rotations_final)
+    scales_final = pc.scaling_activation(scales_final)
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
@@ -82,14 +97,14 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         colors_precomp = override_color
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
-    rendered_image, radii,depth,tile_index = rasterizer(
+    rendered_image, radii, tile_index = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
         colors_precomp = colors_precomp,
         opacities = opacity,
-        scales = scales,
-        rotations = rotations,
+        scales = scales_final,
+        rotations = rotations_final,
         cov3D_precomp = cov3D_precomp)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
@@ -97,5 +112,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     return {"render": rendered_image,
             "viewspace_points": screenspace_points,
             "visibility_filter" : radii > 0,
-            "radii": radii,
-            "depth":depth}
+            "radii": radii,}
+
+            # "depth":depth}

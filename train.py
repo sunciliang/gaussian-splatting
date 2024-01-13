@@ -10,9 +10,10 @@
 #
 
 import os
-
+os.environ['CUDA_LAUNCH_BLOCKING']= '1'
 import numpy as np
 import torch
+import time
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
@@ -32,15 +33,22 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+torch.autograd.set_detect_anomaly(True)
+
+
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree)
+    img_num = getlen(dataset)
+    gaussians = GaussianModel(dataset.sh_degree,img_num)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
     # ------------init deblurnet--------------------
-    deblurnet = debulrnet(num_img=len(scene.getTrainCameras().copy())).cuda()
+    # deblurnet = debulrnet(num_img=len(scene.getTrainCameras().copy())).cuda()
+    # optim_params = deblurnet.parameters()
+    # optimizer = torch.optim.Adam(params=optim_params,lr=1e-5,betas=(0.9,0.999))
+
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -90,25 +98,47 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
-        #________________PE___________________
-        idx = torch.tensor(idx, dtype=torch.int, device="cuda")
-        r_new, s_new = deblurnet(viewpoint_cam,gaussians,idx.reshape(-1))
-        # gaussians._rotation = gaussians._rotation * r_new
-        # gaussians._scaling = gaussians._scaling * s_new
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
+        # render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         # render_pkg_back = render(viewpoint_cam, gaussians, pipe, bg)
-        image, viewspace_point_tensor, visibility_filter, radii,depth = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"],render_pkg["depth"]
-        # 
+        # image, viewspace_point_tensor, visibility_filter, radii, depth = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"],render_pkg["depth"]
 
+
+        # ________________PE___________________
+        idx = torch.tensor(idx, dtype=torch.int, device="cuda")
+        # if iteration < 100:
+        #     inference = True
+        # else :
+        #     inference = False #False True
+        # gaussians_new = deblurnet( new_xyz, new_r, new_s, idx.reshape(-1))
+        # gaussians._rotation = gaussians._rotation * r_new
+        # gaussians._scaling = gaussians._scaling * s_new
+        # rr = gaussians._rotation * r_new
+        # gaussians._rotation = rr
+        # ss = gaussians._scaling * s_new
+        # gaussians._scaling = ss
+        # rr[visibility_filter] *= r_new
+        # gaussians._rotation = rr
+        # gaussians._rotation[visibility_filter] = r_new * gaussians._rotation[visibility_filter]
+        # gaussians._scaling[visibility_filter] *= s_new
+        # with torch.no_grad():
+        #     render_pkg_temp = render(viewpoint_cam, gaussians, pipe, bg, idx, inference)
+        #     viewspace_point_tensor_temp, visibility_filter_tmep=  render_pkg_temp["viewspace_points"], render_pkg_temp["visibility_filter"]
+        # render_pkg_new = render(viewpoint_cam, gaussians, pipe, bg, idx, inference,visibility_filter_tmep)
+        render_pkg_new = render(viewpoint_cam, gaussians, pipe, bg, idx, False)
+        image_new, viewspace_point_tensor_new, visibility_filter_new, radii_new, depth_new = render_pkg_new["render"], render_pkg_new[
+            "viewspace_points"], render_pkg_new["visibility_filter"], render_pkg_new["radii"], render_pkg_new["depth"]
+        # render_pkg_clear = render(viewpoint_cam, gaussians, pipe, bg, idx, True)
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        loss.backward()
+        Ll1 = l1_loss(image_new, gt_image)
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image_new, gt_image))
+        # optimizer.zero_grad()
+        loss.backward(retain_graph=True)
+        # optimizer.step()
 
         iter_end.record()
 
@@ -117,10 +147,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             with torch.no_grad():
                 if not os.path.exists(os.path.join(dataset.model_path,r'img/')):
                     os.makedirs(os.path.join(dataset.model_path,r'img/'))
-                image_save = image.permute(1,2,0)
-                rgb8 = to8b(image_save.cpu().numpy())
-                filname = os.path.join(dataset.model_path,r'img/',f'{iteration}.png')
-                imageio.imwrite(filname,rgb8)
+                render_pkg_2K_C = render(viewpoint_cam, gaussians, pipe, bg, idx, True)
+                render_pkg_2K_B = render(viewpoint_cam, gaussians, pipe, bg, idx, False)
+                image_C = render_pkg_2K_C["render"]
+                image_B = render_pkg_2K_B["render"]
+                image_save_clear = image_C.permute(1,2,0)
+                image_save_blur = image_B.permute(1,2,0)
+                rgb8_blur = to8b(image_save_blur.cpu().numpy())
+                rgb8_clear = to8b(image_save_clear.cpu().numpy())
+                filname_blur = os.path.join(dataset.model_path,r'img/',f'{iteration}_blur.png')
+                filname_clear = os.path.join(dataset.model_path,r'img/',f'{iteration}_clear.png')
+                imageio.imwrite(filname_blur,rgb8_blur)
+                imageio.imwrite(filname_clear,rgb8_clear)
 
 
 
@@ -143,8 +181,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # Densification
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                gaussians.max_radii2D[visibility_filter_new] = torch.max(gaussians.max_radii2D[visibility_filter_new], radii_new[visibility_filter_new])
+                gaussians.add_densification_stats(viewspace_point_tensor_new, visibility_filter_new)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
@@ -201,7 +239,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 l1_test = 0.0
                 psnr_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
+                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians,idx=torch.tensor(idx, dtype=torch.int, device="cuda"), *renderArgs)["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
                     if tb_writer and (idx < 5):
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
